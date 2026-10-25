@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fastdrop-config
+  namespace: fastdrop
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "fastdrop-kafka:9092"
+  SPRING_REDIS_HOST: "fastdrop-redis"
+  SPRING_REDIS_PORT: "6379"
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  JAVA_TOOL_OPTIONS: "-XX:+UseZGC -XX:+ZGenerational -XX:MaxRAMPercentage=75.0"

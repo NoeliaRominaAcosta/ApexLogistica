@@ -1,0 +1,55 @@
+@startuml FastDrop_C4_Components
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Diagrama de Componentes (C4 Nivel 3) - Warehouse Service & Dispatch Service
+
+Container_Boundary(warehouse_boundary, "Warehouse Service") {
+    Component(wh_controller, "WarehouseController", "Spring REST Controller", "Expone endpoints para inicialización y reserva de stock.")
+    Component(wh_service, "WarehouseService", "Spring Service", "Gestiona reglas de inventario, concurrencia optimista y compensaciones.")
+    Component(inv_repo, "InventoryRepository", "Spring Data JPA", "Persiste y bloquea optimísticamente items de inventario.")
+    Component(res_repo, "StockReservationRepository", "Spring Data JPA", "Persiste estados de reservas.")
+    Component(wh_outbox_repo, "OutboxEventRepository", "Spring Data JPA", "Escribe y lee con SKIP LOCKED eventos de Outbox.")
+    Component(wh_outbox_worker, "OutboxPublisherWorker", "Scheduled Task (Virtual Threads)", "Despacha eventos atómicos hacia Kafka.")
+    Component(wh_saga_listener, "SagaCompensationListener", "Kafka Consumer", "Escucha DeliveryFailed y ejecuta rollback.")
+}
+
+Container_Boundary(dispatch_boundary, "Dispatch Service") {
+    Component(disp_listener, "StockReservedEventListener", "Kafka Consumer", "Consume StockReserved para coordinar asignación.")
+    Component(disp_service, "DispatchService", "Spring Service", "Maneja creación de despachos y compensaciones.")
+    Component(routing_client, "ExternalRoutingServiceClient", "Resilience4j Client", "Ejecuta Circuit Breaker, Retry y Fallback.")
+    Component(shipment_repo, "ShipmentRepository", "Spring Data JPA", "Persiste registros de envíos.")
+    Component(disp_outbox_worker, "OutboxPublisherWorker", "Scheduled Task (Virtual Threads)", "Despacha eventos de despacho hacia Kafka.")
+}
+
+ContainerDb(warehouse_db, "Warehouse DB", "PostgreSQL 16", "inventory_items, stock_reservations, outbox_events")
+ContainerDb(dispatch_db, "Dispatch DB", "PostgreSQL 16", "shipments, outbox_events")
+Container(kafka_broker, "Apache Kafka", "Broker", "warehouse.inventory-events, logistics.dispatch-events")
+System_Ext(maps_api, "API de Mapas Externa", "Cálculo de rutas")
+
+' Warehouse interacciones internas
+Rel(wh_controller, wh_service, "Invoca operaciones de reserva")
+Rel(wh_service, inv_repo, "Actualiza stock con @Version")
+Rel(wh_service, res_repo, "Registra reserva")
+Rel(wh_service, wh_outbox_repo, "Escribe StockReserved / StockCancelled en la misma TX")
+Rel(wh_outbox_worker, wh_outbox_repo, "SELECT FOR UPDATE SKIP LOCKED")
+Rel(wh_outbox_worker, kafka_broker, "Publica eventos a Kafka")
+Rel_Back(wh_saga_listener, kafka_broker, "Consume 'DeliveryFailed'")
+Rel(wh_saga_listener, wh_service, "Dispara compensación cancelReservation()")
+
+Rel(inv_repo, warehouse_db, "JDBC")
+Rel(res_repo, warehouse_db, "JDBC")
+Rel(wh_outbox_repo, warehouse_db, "JDBC")
+
+' Dispatch interacciones internas
+Rel_Back(disp_listener, kafka_broker, "Consume 'StockReserved'")
+Rel(disp_listener, disp_service, "Coordina despacho")
+Rel(disp_service, routing_client, "Calcula ruta y chofer")
+Rel(routing_client, maps_api, "Llamada HTTP protegida con CircuitBreaker")
+Rel(disp_service, shipment_repo, "Guarda estado del envío")
+Rel(disp_service, disp_outbox_worker, "Registra outbox")
+Rel(disp_outbox_worker, kafka_broker, "Publica DeliveryScheduled / DeliveryFailed")
+Rel(shipment_repo, dispatch_db, "JDBC")
+
+@enduml

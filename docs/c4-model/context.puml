@@ -1,0 +1,22 @@
+@startuml FastDrop_C4_Context
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Diagrama de Contexto del Sistema (C4 Nivel 1) - Plataforma FastDrop
+
+Person(customer, "Cliente", "Usuario que realiza compras y consulta en tiempo real el estado de su envío.")
+Person(driver, "Conductor / Operador", "Personal logístico encargado de la recolección, transporte y entrega física.")
+
+System(fastdrop_system, "Sistema FastDrop Logistics", "Plataforma distribuida de fulfillment, gestión de depósitos, asignación de rutas y tracking en tiempo real.")
+
+System_Ext(maps_api, "API Externa de Mapas y Enrutamiento", "Servicio externo de cálculo de rutas y geocodificación.")
+System_Ext(grafana_cloud, "Grafana Cloud / Observabilidad", "Plataforma externa para recolección de métricas, logs y trazas distribuidas (Mimir, Loki, Tempo).")
+
+Rel(customer, fastdrop_system, "Consulta estado del envío", "HTTPS / JSON")
+Rel(driver, fastdrop_system, "Recibe asignación de despacho y actualiza estados", "HTTPS / Móvil")
+
+Rel(fastdrop_system, maps_api, "Calcula rutas óptimas de despacho con Circuit Breaker", "HTTPS / REST")
+Rel(fastdrop_system, grafana_cloud, "Exporta telemetría distribuida", "OTLP / gRPC")
+
+@enduml

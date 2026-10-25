@@ -1,0 +1,246 @@
+Para cubrir transversalmente **Patrones Distribuidos**, **Datos/Eventos** y **Observabilidad/Plataforma**, el escenario ideal es un dominio que requiera consistencia eventual, transacciones multi-paso con compensaciones y alta concurrencia.
+
+---
+
+### Temática recomendada: Sistema de Logística y Fulfillment de Envíos ("FastDrop")
+
+Un flujo de fulfillment de e-commerce donde se procesa una orden de entrega que involucra tres dominios acoplados por negocio pero desacoplados técnicamente:
+
+1. **Warehouse / Inventory Service:** Reserva stock físico en un centro de distribución.
+2. **Dispatch / Delivery Service:** Asigna conductor/ruta y genera la etiqueta de envío.
+3. **Notification / Tracking Service:** Actualiza el estado al cliente y emite telemetría de eventos.
+
+---
+
+### Mapeo de Requisitos e Implementación Técnica
+
+#### 1. Patrones Distribuidos y Concurrencia (Fase 2)
+
+* **Saga Pattern (Coreografiada o con Orquestador liviano):**
+* Flujo exitoso: `OrderPlaced` $\rightarrow$ `StockReserved` $\rightarrow$ `DeliveryScheduled` $\rightarrow$ `OrderReadyForPickup`.
+* Flujo de compensación (Rollback): Si falla la asignación de transporte (ej. sin flota disponible), se emite `DeliveryFailed`, lo que dispara la compensación en Warehouse (`CancelStockReservation`) y revierte el estado a `OrderCancelled`.
+
+
+* **Transactional Outbox Pattern:**
+* Al actualizar el estado de una orden en PostgreSQL, se escribe simultáneamente en una tabla `outbox_events` dentro de la **misma transacción relacional** (`@Transactional`).
+* Un relay asíncrono (usando Debezium vía Change Data Capture o un worker con polling y bloqueo pesimista `SELECT ... FOR UPDATE SKIP LOCKED`) lee la tabla y publica a Kafka/RabbitMQ sin riesgo de dual-write.
+
+
+* **Resiliencia (Resilience4j):**
+* **Circuit Breaker & Fallback:** En llamadas a APIs externas (ej. geocodificación o validación de direcciones postales).
+* **Retry con Backoff Exponencial:** Para reintentar publicaciones o conexiones transitorias.
+* **Rate Limiter:** Para limitar endpoints públicos de tracking de envíos.
+
+
+* **Virtual Threads (Java 21+):**
+* Configurar `spring.threads.virtual.enabled=true` en Spring Boot 3.x.
+* Diseñar endpoints I/O intensivos (consultas HTTP a pasarelas de tracking, lecturas a DB con JDBC bloqueante) aprovechando la planificación de Virtual Threads sobre los carriers sin agotar el pool de conexiones ni saturar memoria.
+
+
+
+---
+
+#### 2. Datos, Asincronismo y Eventos (Fase 3)
+
+* **Broker de Mensajería (Kafka o RabbitMQ):**
+* *Si elegís Kafka:*
+* Tópicos clave: `warehouse.inventory-events`, `logistics.dispatch-events`, `orders.saga-commands`.
+* Particionado por `order_id` o `warehouse_id` para garantizar ordenamiento estricto de eventos por entidad.
+* Consumer groups independientes para tracking y analítica. Manejo de **DLQ (Dead Letter Queue)** y reintentos automáticos tras $N$ fallas.
+
+
+* *Si elegís RabbitMQ:* Direct/Topic Exchanges con routing keys semánticas (`shipment.created`, `shipment.cancelled`) y TTL para mensajes reintentados.
+
+
+* **Modelado en PostgreSQL:**
+* Esquemas separados por bounded context (o bases independientes para simular microservicios reales).
+* Columnas para concurrencia optimista (`@Version` en JPA) para evitar sobre-escritura en reservas de stock concurrentes.
+* Índices parciales o B-Tree sobre estados no finalizados (`WHERE status IN ('PENDING', 'PROCESSING')`) para optimizar el worker del Outbox.
+
+
+* **Estrategia de Caching (Redis):**
+* **Cache-Aside Pattern:** Cachear el estado del tracking de envíos (`GET /shipments/{id}/tracking`) con un TTL corto (ej. 30 segundos).
+* **Invalidación reactiva:** Consumir eventos del broker (`ShipmentMoved`, `ShipmentDelivered`) para expulsar la clave de Redis (`DEL shipment:{id}`) de forma proactiva.
+
+
+
+---
+
+#### 3. Observabilidad, Plataforma y Documentación (Fase 4)
+
+* **OpenTelemetry (OTel):**
+* OTel Java Agent o instrumentación con Micrometer Tracing.
+* **Trazabilidad distribuida de punta a punta:** El trace context (`traceparent` header) debe propagarse desde el HTTP controller, pasar a través de las tablas del Outbox, viajar en los Kafka/RabbitMQ headers y recuperarse en el consumidor.
+* Correlación de logs: Cada línea de log en JSON debe incluir `trace_id` y `span_id`.
+
+
+* **Kubernetes (K8s) Patterns:**
+* **Probes:** `livenessProbe` (detecta deadlocks), `readinessProbe` (verifica conexión a PostgreSQL y broker) y `startupProbe` para arranque inicial.
+* **Configuración desacoplada:** `ConfigMap` para variables generales y `Secret` para credenciales de base de datos/broker.
+* **Despliegues y recursos:** Definir `resources.requests` y `resources.limits` ajustados para la JVM, y manifests para simular un despliegue Blue/Green o Rolling Update.
+
+
+* **Documentación de Arquitectura:**
+* **Modelo C4 (en Structurizr DSL o PlantUML/Mermaid):**
+* *Nivel 1 (Context):* Usuarios (clientes, choferes), sistema FastDrop y sistemas externos (proveedores de mapas, pasarelas).
+* *Nivel 2 (Containers):* Servicios backend en Java, base de datos PostgreSQL, cluster de Kafka/RabbitMQ, Redis cache y Grafana/Prometheus.
+* *Nivel 3 (Components):* Diagrama interno de un servicio (Controllers, Handlers de Saga, Repositorios, Outbox Publisher).
+
+
+* **ADRs (Architecture Decision Records):**
+* *ADR-001:* Adopción de Transactional Outbox vs 2PC (Two-Phase Commit) para consistencia de datos.
+* *ADR-002:* Elección de Saga Coreografiada vs Orquestada para el flujo de reservas de envío.
+* *ADR-003:* Uso de Virtual Threads frente a programación reactiva (WebFlux) para simplificar el modelo de concurrencia.
+
+
+
+
+
+---
+
+### Estructura de Repositorio Sugerida
+
+```
+fastdrop-logistics/
+├── docs/
+│   ├── adr/
+│   │   ├── 0001-transactional-outbox.md
+│   │   └── 0002-saga-coordination.md
+│   └── c4-model/
+│       ├── context.puml
+│       └── containers.puml
+├── k8s/
+│   ├── base/
+│   │   ├── configmap.yaml
+│   │   └── deployment.yaml
+│   └── overlays/
+├── warehouse-service/       # Saga Step 1 + Outbox + PostgreSQL
+├── dispatch-service/        # Saga Step 2 + Compensaciones + Outbox
+├── tracking-service/        # Cache-Aside con Redis + Virtual Threads
+└── docker-compose.yml       # Kafka/RabbitMQ, Postgres, Redis, Grafana/Loki
+
+```
+
+# ADR-001: Implementación del Patrón Transactional Outbox para Publicación Confiable de Eventos
+
+* **Estado:** Aceptado
+* **Fecha:** 2026-10-14
+* **Decisores:** Equipo de Arquitectura e Ingeniería Backend
+* **Contexto Técnico:** Java 21, Spring Boot 3.x, PostgreSQL 16, Apache Kafka
+
+---
+
+## 1. Contexto y Planteamiento del Problema
+
+En el sistema de logística y fulfillment de envíos (**FastDrop**), los servicios (Warehouse, Dispatch, Tracking) necesitan persistir cambios de estado en sus bases de datos relacionales y notificar de inmediato a otros microservicios mediante eventos de dominio en Apache Kafka (por ejemplo, `StockReserved`, `ShipmentScheduled`).
+
+El enfoque ingenuo de *Dual-Write* (escribir en la base de datos y luego invocar `kafkaTemplate.send()`) introduce fallos de atomicidad críticos:
+1. Si la transacción en PostgreSQL hace commit exitoso pero el broker de Kafka no está disponible o falla la red, el evento se pierde definitivamente, dejando al resto del sistema en un estado inconsistente.
+2. Si se invoca a Kafka primero y la transacción en PostgreSQL falla (rollback por violación de constraints, timeout, etc.), se emite un evento fantasma al clúster para un cambio que nunca existió.
+
+El uso de transacciones distribuidas tradicionales tipo Two-Phase Commit (2PC / XA) no es viable: introduce bloqueos prolongados, reduce drásticamente el throughput, agrega un punto único de falla con el coordinador de transacciones y no cuenta con soporte nativo eficiente en brokers modernos como Kafka.
+
+---
+
+## 2. Decisiones Consideradas
+
+* **Opción 1: Dual-Write con reintentos locales en memoria.**
+* **Opción 2: Two-Phase Commit (2PC) / XA Transactions.**
+* **Opción 3: Transactional Outbox Pattern con relay asíncrono (Polling Publisher).**
+* **Opción 4: Transactional Outbox Pattern con Change Data Capture (CDC / Debezium).**
+
+---
+
+## 3. Decisión Aceptada
+
+Se decide implementar el **Patrón Transactional Outbox (Opción 3 con evolución planeada a Opción 4)**:
+
+1. **Escritura Atómica Local:** Cada servicio persistirá la entidad de negocio y el registro del evento en una tabla dedicada (`outbox_events`) dentro de la **misma transacción local de PostgreSQL** (`@Transactional`).
+2. **Esquema de Outbox:**
+   * `id` (UUID, PK)
+   * `aggregate_type` (VARCHAR)
+   * `aggregate_id` (VARCHAR)
+   * `event_type` (VARCHAR)
+   * `payload` (JSONB)
+   * `trace_context` (JSONB / Map con `traceparent` de OpenTelemetry)
+   * `created_at` (TIMESTAMPTZ)
+   * `processed_at` (TIMESTAMPTZ, nullable)
+3. **Mecanismo de Despacho (Fase Inicial):** Un worker asíncrono en segundo plano (`@Scheduled` con Virtual Threads) leerá eventos pendientes usando la sentencia SQL:
+   ```sql
+   SELECT * FROM outbox_events
+   WHERE processed_at IS NULL
+   ORDER BY created_at ASC
+   LIMIT 100
+   FOR UPDATE SKIP LOCKED;
+
+
+   ---
+
+   ### 2. Diagrama C4 Nivel 2: Contenedores (PlantUML)
+
+   Este diagrama utiliza la librería estándar **C4-PlantUML** y refleja la topología completa del sistema FastDrop, incluyendo los tres microservicios, PostgreSQL, Kafka, Redis, el worker del Outbox y la plataforma de observabilidad (OpenTelemetry Collector y Grafana Cloud).
+
+   ```plantuml
+   @startuml FastDrop_C4_Containers
+   !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+   LAYOUT_WITH_LEGEND()
+
+   title Diagrama de Contenedores (C4 Nivel 2) - Plataforma de Logística FastDrop
+
+   Person(customer, "Cliente", "Usuario que realiza compras y consulta el estado de su envío.")
+   Person(driver, "Conductor / Operador", "Personal logístico encargado de la recolección y entrega.")
+
+   System_Boundary(fastdrop_boundary, "Plataforma FastDrop") {
+
+       Container(api_gateway, "API Gateway / Ingress", "Traefik / NGINX", "Punto de entrada único. Maneja TLS, Rate Limiting y enrutamiento hacia los servicios.")
+
+       Container(warehouse_service, "Warehouse Service", "Java 21, Spring Boot 3", "Gestiona el inventario y reservas de stock físico. Implementa Transactional Outbox.")
+       Container(dispatch_service, "Dispatch Service", "Java 21, Spring Boot 3", "Coordina rutas, asignación de conductores y compensaciones de Saga. Implementa Transactional Outbox.")
+       Container(tracking_service, "Tracking Service", "Java 21, Spring Boot 3, Virtual Threads", "Provee consultas de tracking de alta concurrencia usando Cache-Aside.")
+
+       ContainerDb(warehouse_db, "Warehouse DB", "PostgreSQL 16", "Almacena stock físico, reservas y tabla 'outbox_events'.")
+       ContainerDb(dispatch_db, "Dispatch DB", "PostgreSQL 16", "Almacena despachos, asignaciones y tabla 'outbox_events'.")
+
+       ContainerDb(redis_cache, "Tracking Cache", "Redis 7", "Almacena estados calientes de envíos con TTL e invalidación por eventos.")
+
+       Container(kafka_broker, "Event Broker", "Apache Kafka", "Bus de eventos distribuido. Tópicos: 'warehouse.events', 'dispatch.events', 'saga.commands'.")
+
+       Container(otel_collector, "OpenTelemetry Collector", "OTel Agent / Daemon", "Recolecta traces OTLP, métricas de JVM/Micrometer y logs JSON estructurados.")
+   }
+
+   System_Ext(grafana_cloud, "Grafana Cloud", "Mimir (Métricas), Loki (Logs) y Tempo (Distributed Traces).")
+   System_Ext(maps_api, "External Routing API", "API externa de mapas y geocodificación.")
+
+   ' Relaciones de usuarios
+   Rel(customer, api_gateway, "Consulta tracking de pedidos", "HTTPS / JSON")
+   Rel(driver, api_gateway, "Actualiza checkpoints de entrega", "HTTPS / JSON")
+
+   ' Relaciones de Gateway
+   Rel(api_gateway, warehouse_service, "Comandos de preparación de pedidos", "HTTP / REST")
+   Rel(api_gateway, dispatch_service, "Comandos de asignación de despacho", "HTTP / REST")
+   Rel(api_gateway, tracking_service, "Consultas de tracking", "HTTP / REST")
+
+   ' Warehouse Service e interacciones
+   Rel(warehouse_service, warehouse_db, "Persiste estado de stock y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
+   Rel(warehouse_service, kafka_broker, "Outbox Worker: Publica eventos 'StockReserved', 'StockCancelled'", "Kafka Protocol (At-least-once)")
+   Rel_Back(warehouse_service, kafka_broker, "Consume eventos compensatorios de la Saga", "Kafka Consumer")
+
+   ' Dispatch Service e interacciones
+   Rel(dispatch_service, dispatch_db, "Persiste despachos y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
+   Rel(dispatch_service, kafka_broker, "Outbox Worker: Publica eventos 'ShipmentDispatched', 'DispatchFailed'", "Kafka Protocol")
+   Rel_Back(dispatch_service, kafka_broker, "Consume 'StockReserved' para iniciar el despacho", "Kafka Consumer")
+   Rel(dispatch_service, maps_api, "Calcula rutas con Circuit Breaker (Resilience4j)", "HTTPS / REST")
+
+   ' Tracking Service e interacciones
+   Rel(tracking_service, redis_cache, "Consulta estado cacheado (Cache-Aside)", "RESP Protocol")
+   Rel_Back(tracking_service, kafka_broker, "Consume eventos del broker para invalidar o actualizar cache", "Kafka Consumer")
+
+   ' Observabilidad
+   Rel(warehouse_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+   Rel(dispatch_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+   Rel(tracking_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+   Rel(otel_collector, grafana_cloud, "Exporta telemetría a Prometheus/Mimir, Loki y Tempo", "HTTPS / OTLP Remote Write")
+
+   @enduml
+

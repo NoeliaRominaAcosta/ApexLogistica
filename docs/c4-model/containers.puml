@@ -1,0 +1,62 @@
+@startuml FastDrop_C4_Containers
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Diagrama de Contenedores (C4 Nivel 2) - Plataforma de Logística FastDrop
+
+Person(customer, "Cliente", "Usuario que realiza compras y consulta el estado de su envío.")
+Person(driver, "Conductor / Operador", "Personal logístico encargado de la recolección y entrega.")
+
+System_Boundary(fastdrop_boundary, "Plataforma FastDrop") {
+
+    Container(api_gateway, "API Gateway / Ingress", "Traefik / NGINX", "Punto de entrada único. Maneja TLS, Rate Limiting y enrutamiento hacia los servicios.")
+
+    Container(warehouse_service, "Warehouse Service", "Java 21, Spring Boot 3", "Gestiona el inventario y reservas de stock físico. Implementa Transactional Outbox y Optimistic Locking.")
+    Container(dispatch_service, "Dispatch Service", "Java 21, Spring Boot 3", "Coordina rutas, asignación de conductores con Resilience4j y compensaciones de Saga. Implementa Transactional Outbox.")
+    Container(tracking_service, "Tracking Service", "Java 21, Spring Boot 3, Virtual Threads", "Provee consultas de tracking de alta concurrencia usando Cache-Aside.")
+
+    ContainerDb(warehouse_db, "Warehouse DB", "PostgreSQL 16", "Almacena stock físico, reservas y tabla 'outbox_events'.")
+    ContainerDb(dispatch_db, "Dispatch DB", "PostgreSQL 16", "Almacena despachos, asignaciones y tabla 'outbox_events'.")
+
+    ContainerDb(redis_cache, "Tracking Cache", "Redis 7", "Almacena estados calientes de envíos con TTL e invalidación por eventos.")
+
+    Container(kafka_broker, "Event Broker", "Apache Kafka (KRaft)", "Bus de eventos distribuido. Tópicos: 'warehouse.inventory-events', 'logistics.dispatch-events', 'orders.saga-commands'.")
+
+    Container(otel_collector, "OpenTelemetry / Zipkin", "OTel Collector / Zipkin", "Recolecta traces OTLP, métricas de JVM/Micrometer y logs JSON estructurados.")
+}
+
+System_Ext(grafana_cloud, "Grafana Cloud", "Mimir (Métricas), Loki (Logs) y Tempo (Distributed Traces).")
+System_Ext(maps_api, "External Routing API", "API externa de mapas y geocodificación.")
+
+' Relaciones de usuarios
+Rel(customer, api_gateway, "Consulta tracking de pedidos", "HTTPS / JSON")
+Rel(driver, api_gateway, "Actualiza checkpoints de entrega", "HTTPS / JSON")
+
+' Relaciones de Gateway
+Rel(api_gateway, warehouse_service, "Comandos de preparación y reserva de pedidos", "HTTP / REST")
+Rel(api_gateway, dispatch_service, "Comandos de asignación de despacho", "HTTP / REST")
+Rel(api_gateway, tracking_service, "Consultas de tracking", "HTTP / REST")
+
+' Warehouse Service e interacciones
+Rel(warehouse_service, warehouse_db, "Persiste estado de stock y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
+Rel(warehouse_service, kafka_broker, "Outbox Worker: Publica eventos 'StockReserved', 'StockCancelled'", "Kafka Protocol (At-least-once)")
+Rel_Back(warehouse_service, kafka_broker, "Consume eventos compensatorios de la Saga ('DeliveryFailed')", "Kafka Consumer")
+
+' Dispatch Service e interacciones
+Rel(dispatch_service, dispatch_db, "Persiste despachos y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
+Rel(dispatch_service, kafka_broker, "Outbox Worker: Publica eventos 'DeliveryScheduled', 'DeliveryFailed'", "Kafka Protocol")
+Rel_Back(dispatch_service, kafka_broker, "Consume 'StockReserved' para iniciar el despacho", "Kafka Consumer")
+Rel(dispatch_service, maps_api, "Calcula rutas con Circuit Breaker & Retry (Resilience4j)", "HTTPS / REST")
+
+' Tracking Service e interacciones
+Rel(tracking_service, redis_cache, "Consulta estado cacheado (Cache-Aside)", "RESP Protocol")
+Rel_Back(tracking_service, kafka_broker, "Consume eventos del broker para invalidar o actualizar cache", "Kafka Consumer")
+
+' Observabilidad
+Rel(warehouse_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+Rel(dispatch_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+Rel(tracking_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
+Rel(otel_collector, grafana_cloud, "Exporta telemetría a Prometheus/Mimir, Loki y Tempo", "HTTPS / OTLP Remote Write")
+
+@enduml

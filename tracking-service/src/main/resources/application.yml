@@ -1,0 +1,56 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: tracking-service
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+      timeout: 2000ms
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: tracking-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+app:
+  kafka:
+    topics:
+      inventory-events: warehouse.inventory-events
+      dispatch-events: logistics.dispatch-events
+  cache:
+    tracking-ttl-seconds: 30
+
+# Resilience4j Rate Limiter
+resilience4j:
+  ratelimiter:
+    instances:
+      trackingApi:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 200ms
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{trace_id:-},%X{span_id:-}]"
