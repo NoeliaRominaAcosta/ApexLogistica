@@ -22,7 +22,7 @@
         <lombok.version>1.18.34</lombok.version>
         <spring-statemachine.version>4.0.0</spring-statemachine.version>
         <archunit.version>1.3.0</archunit.version>
-        <jacoco.version>0.8.12</jacoco.version>
+        <jacoco.version>0.8.15</jacoco.version>
     </properties>
 
     <modules>
