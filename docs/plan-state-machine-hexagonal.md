@@ -50,47 +50,7 @@ Además, servicios, entidades JPA, listeners de Kafka y la lógica de outbox est
 
 ### 3.1 Vista general (igual para ambos servicios)
 
-```mermaid
-flowchart LR
-    subgraph IN["Adaptadores de entrada (driving)"]
-        REST["REST Controllers"]
-        KAFKA_IN["Kafka Listeners"]
-        SCHED["Recovery Scheduler"]
-    end
-
-    subgraph APP["Application"]
-        UC["Use Cases (servicios de aplicación)"]
-        PIN["Puertos de entrada"]
-        POUT["Puertos de salida"]
-    end
-
-    subgraph DOM["Domain"]
-        AGG["Agregados + Value Objects"]
-        ST["Enums de State / Event"]
-        DEV["Domain Events"]
-    end
-
-    subgraph OUT["Adaptadores de salida (driven)"]
-        SSM["Spring State Machine Adapter"]
-        JPA["JPA Persistence Adapter"]
-        OUTBOX["Outbox Publisher Adapter"]
-        ROUTING["Routing API Adapter (Resilience4j)"]
-        RELAY["Outbox Relay Worker → Kafka"]
-    end
-
-    REST --> PIN
-    KAFKA_IN --> PIN
-    SCHED --> PIN
-    PIN --> UC
-    UC --> AGG
-    UC --> POUT
-    POUT -.implementado por.-> SSM
-    POUT -.implementado por.-> JPA
-    POUT -.implementado por.-> OUTBOX
-    POUT -.implementado por.-> ROUTING
-    SSM --> AGG
-    OUTBOX --> RELAY
-```
+![Domain Event Outbox Pipeline-2026-10-25-201623.png](Domain%20Event%20Outbox%20Pipeline-2026-10-25-201623.png)
 
 **Regla de dependencias:** `infrastructure → application → domain`. Nunca al revés.
 
@@ -167,19 +127,7 @@ com.fastdrop.warehouse
 
 ### 4.1 Diagrama
 
-```mermaid
-stateDiagram-v2
-    [*] --> NEW
-    NEW --> STOCK_CHECK: RESERVE
-    state STOCK_CHECK <<choice>>
-    STOCK_CHECK --> RESERVED: [hasAvailableStock] / reserveStock
-    STOCK_CHECK --> REJECTED: [else] / reject
-    RESERVED --> CONFIRMED: CONFIRM / confirm
-    RESERVED --> CANCELLED: CANCEL / releaseStock
-    CONFIRMED --> CANCELLED: CANCEL / releaseStock
-    REJECTED --> [*]
-    CANCELLED --> [*]
-```
+![Domain Event Outbox Pipeline-2026-10-25-205044.png](Domain%20Event%20Outbox%20Pipeline-2026-10-25-205044.png)
 
 ### 4.2 Tabla de transiciones
 
@@ -204,19 +152,7 @@ stateDiagram-v2
 
 ### 5.1 Diagrama
 
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING_ROUTING
-    PENDING_ROUTING --> SCHEDULED: ROUTE_ASSIGNED / assignRoute
-    PENDING_ROUTING --> FAILED: ROUTE_FAILED / markFailed
-    SCHEDULED --> IN_TRANSIT: PICK_UP / pickUp
-    SCHEDULED --> CANCELLED: CANCEL / cancel
-    IN_TRANSIT --> DELIVERED: DELIVER / deliver
-    IN_TRANSIT --> FAILED: DELIVERY_FAILED / markFailed
-    DELIVERED --> [*]
-    FAILED --> [*]
-    CANCELLED --> [*]
-```
+![Domain Event Outbox Pipeline-2026-10-25-205135.png](Domain%20Event%20Outbox%20Pipeline-2026-10-25-205135.png)
 
 ### 5.2 Tabla de transiciones
 
@@ -249,40 +185,8 @@ stateDiagram-v2
 
 ### 6.1 Secuencia (ejemplo: compensación por `DeliveryFailed`)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant K as Kafka (dispatch-events)
-    participant L as DispatchEventsKafkaListener
-    participant UC as ReservationService (CancelReservationUseCase)
-    participant RP as ReservationRepositoryPort
-    participant SMP as ReservationStateMachinePort
-    participant SSM as ReservationStateMachineAdapter (SSM)
-    participant A as StockReservation (dominio)
-    participant EP as DomainEventPublisherPort (Outbox)
 
-    K->>L: record (eventType=DeliveryFailed, traceparent)
-    L->>L: set trace context + map a CancelReservationCommand
-    L->>UC: cancel(command)
-    activate UC
-    Note over UC: @Transactional
-    UC->>RP: findByOrderId(orderId)
-    RP-->>UC: StockReservation (state=RESERVED, version=n)
-    UC->>SMP: fire(aggregateCtx, CANCEL, reason)
-    SMP->>SSM: factory.getStateMachine(orderId)
-    SSM->>SSM: reset a RESERVED + start
-    SSM->>SSM: sendEvent(CANCEL + headers)
-    SSM->>A: ReleaseStockAction → reservation.cancel(reason, inventory)
-    A->>A: registra domain event StockReleased
-    SSM-->>SMP: ACCEPTED, nuevo estado CANCELLED
-    SMP-->>UC: TransitionResult(CANCELLED)
-    UC->>A: changeState(CANCELLED)
-    UC->>RP: save(reservation) + save(inventory)
-    UC->>EP: publish(reservation.pullDomainEvents())
-    EP->>EP: map → StockCancelledEvent + traceparent → outbox_events
-    deactivate UC
-    Note over UC: COMMIT atómico (estado + inventario + outbox)
-```
+![Domain Event Outbox Pipeline-2026-10-25-205329.svg](Domain%20Event%20Outbox%20Pipeline-2026-10-25-205329.svg)
 
 ### 6.2 Dominio: enums y agregado
 

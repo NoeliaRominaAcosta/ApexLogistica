@@ -1,0 +1,58 @@
+name: FastDrop Logistics CI
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+    branches: [ "main", "master", "develop" ]
+  workflow_dispatch:
+
+# Cancela ejecuciones en curso si se envía un nuevo commit a la misma rama o PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  build-and-test:
+    name: Build, Test (SSM + ArchUnit) & Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin) with Maven Cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build reactor, run tests (Unit + Spring State Machine + ArchUnit) & generate JaCoCo reports
+        run: mvn -B -ntp clean verify
+
+      - name: Publish JUnit Test Report to Job Summary
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: '**/target/surefire-reports/TEST-*.xml'
+          check_name: 'FastDrop Test Results (Unit + SSM + ArchUnit)'
+          include_passed: true
+          detailed_summary: true
+          fail_on_failure: true
+
+      - name: Upload Test & JaCoCo Coverage Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-and-coverage-reports
+          path: |
+            **/target/surefire-reports/*.xml
+            **/target/site/jacoco/**
+          retention-days: 14

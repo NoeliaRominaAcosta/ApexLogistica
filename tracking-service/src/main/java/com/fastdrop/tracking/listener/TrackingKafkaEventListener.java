@@ -50,6 +50,12 @@ public class TrackingKafkaEventListener {
                             whId, null, null, addr);
                     break;
 
+                case "StockReservationRejected":
+                    String rejReason = rootNode.has("reason") ? rootNode.get("reason").asText() : "Stock insuficiente";
+                    trackingService.recordCheckpoint(orderId, "STOCK_REJECTED", "Reserva rechazada: " + rejReason,
+                            null, null, null, null);
+                    break;
+
                 case "DeliveryScheduled":
                     String drvId = rootNode.has("driverId") ? rootNode.get("driverId").asText() : null;
                     String trkNum = rootNode.has("trackingNumber") ? rootNode.get("trackingNumber").asText() : null;
@@ -57,9 +63,29 @@ public class TrackingKafkaEventListener {
                             null, drvId, trkNum, null);
                     break;
 
+                case "ShipmentPickedUp":
+                    String pDrv = rootNode.has("driverId") ? rootNode.get("driverId").asText() : null;
+                    String pTrk = rootNode.has("trackingNumber") ? rootNode.get("trackingNumber").asText() : null;
+                    trackingService.recordCheckpoint(orderId, "IN_TRANSIT", "Envío retirado y en tránsito",
+                            null, pDrv, pTrk, null);
+                    break;
+
+                case "ShipmentDelivered":
+                    String dDrv = rootNode.has("driverId") ? rootNode.get("driverId").asText() : null;
+                    String dTrk = rootNode.has("trackingNumber") ? rootNode.get("trackingNumber").asText() : null;
+                    trackingService.recordCheckpoint(orderId, "DELIVERED", "Envío entregado exitosamente al destinatario",
+                            null, dDrv, dTrk, null);
+                    break;
+
                 case "DeliveryFailed":
                     String reason = rootNode.has("reason") ? rootNode.get("reason").asText() : "Fallo de despacho";
                     trackingService.recordCheckpoint(orderId, "DELIVERY_FAILED", "Despacho fallido: " + reason,
+                            null, null, null, null);
+                    break;
+
+                case "ShipmentCancelled":
+                    String shpCancelReason = rootNode.has("reason") ? rootNode.get("reason").asText() : "Envío cancelado";
+                    trackingService.recordCheckpoint(orderId, "CANCELLED", "Envío cancelado: " + shpCancelReason,
                             null, null, null, null);
                     break;
 

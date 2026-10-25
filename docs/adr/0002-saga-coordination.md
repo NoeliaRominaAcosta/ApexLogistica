@@ -1,6 +1,6 @@
 # ADR-002: Elección de Saga Coreografiada vs Orquestada para el Flujo de Fulfillment
 
-* **Estado:** Aceptado
+* **Estado:** Reemplazado por [ADR-005](0005-orchestrated-saga-state-machine.md)
 * **Fecha:** 2026-10-14
 * **Decisores:** Equipo de Arquitectura FastDrop
 * **Contexto Técnico:** Apache Kafka, Spring Boot 3, Patrones Distribuidos

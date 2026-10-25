@@ -40,6 +40,7 @@ app:
   kafka:
     topics:
       inventory-events: warehouse.inventory-events
+      warehouse-commands: warehouse.commands
       dispatch-events: logistics.dispatch-events
       saga-commands: orders.saga-commands
   outbox:

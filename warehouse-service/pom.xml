@@ -19,6 +19,10 @@
             <groupId>com.fastdrop</groupId>
             <artifactId>common-events</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.fastdrop</groupId>
+            <artifactId>common-statemachine</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -69,6 +73,16 @@
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.statemachine</groupId>
+            <artifactId>spring-statemachine-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

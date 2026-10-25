@@ -10,53 +10,46 @@ Person(driver, "Conductor / Operador", "Personal logístico encargado de la reco
 
 System_Boundary(fastdrop_boundary, "Plataforma FastDrop") {
 
-    Container(api_gateway, "API Gateway / Ingress", "Traefik / NGINX", "Punto de entrada único. Maneja TLS, Rate Limiting y enrutamiento hacia los servicios.")
+    Container(api_gateway, "API Gateway / Ingress", "Traefik / NGINX", "Punto de entrada único. Maneja TLS, Rate Limiting y enrutamiento.")
 
-    Container(warehouse_service, "Warehouse Service", "Java 21, Spring Boot 3", "Gestiona el inventario y reservas de stock físico. Implementa Transactional Outbox y Optimistic Locking.")
-    Container(dispatch_service, "Dispatch Service", "Java 21, Spring Boot 3", "Coordina rutas, asignación de conductores con Resilience4j y compensaciones de Saga. Implementa Transactional Outbox.")
-    Container(tracking_service, "Tracking Service", "Java 21, Spring Boot 3, Virtual Threads", "Provee consultas de tracking de alta concurrencia usando Cache-Aside.")
+    Container(orchestrator_service, "Order Orchestrator Service", "Java 21, Spring Boot 3, Spring State Machine", "Orquesta la Saga de órdenes (OrderSaga SSM), maneja timeouts y publica comandos vía Transactional Outbox.")
+    Container(warehouse_service, "Warehouse Service", "Java 21, Spring Boot 3, Spring State Machine", "Gestiona inventario y máquina de estados local StockReservation. Implementa Optimistic Locking y Outbox.")
+    Container(dispatch_service, "Dispatch Service", "Java 21, Spring Boot 3, Spring State Machine", "Gestiona máquina de estados local Shipment, rutas con Resilience4j y Outbox.")
+    Container(tracking_service, "Tracking Service", "Java 21, Spring Boot 3, Virtual Threads", "Provee consultas de tracking de alta concurrencia usando Cache-Aside en Redis.")
 
-    ContainerDb(warehouse_db, "Warehouse DB", "PostgreSQL 16", "Almacena stock físico, reservas y tabla 'outbox_events'.")
-    ContainerDb(dispatch_db, "Dispatch DB", "PostgreSQL 16", "Almacena despachos, asignaciones y tabla 'outbox_events'.")
+    ContainerDb(orchestrator_db, "Orchestrator DB", "PostgreSQL 16", "Almacena order_sagas, processed_messages y outbox_events.")
+    ContainerDb(warehouse_db, "Warehouse DB", "PostgreSQL 16", "Almacena inventory_items, stock_reservations y outbox_events.")
+    ContainerDb(dispatch_db, "Dispatch DB", "PostgreSQL 16", "Almacena shipments y outbox_events.")
+    ContainerDb(redis_cache, "Tracking Cache", "Redis 7", "Almacena estados calientes de envíos con TTL e invalidación reactiva.")
 
-    ContainerDb(redis_cache, "Tracking Cache", "Redis 7", "Almacena estados calientes de envíos con TTL e invalidación por eventos.")
-
-    Container(kafka_broker, "Event Broker", "Apache Kafka (KRaft)", "Bus de eventos distribuido. Tópicos: 'warehouse.inventory-events', 'logistics.dispatch-events', 'orders.saga-commands'.")
-
-    Container(otel_collector, "OpenTelemetry / Zipkin", "OTel Collector / Zipkin", "Recolecta traces OTLP, métricas de JVM/Micrometer y logs JSON estructurados.")
+    Container(kafka_broker, "Event Broker", "Apache Kafka (KRaft)", "Tópicos: 'warehouse.commands', 'dispatch.commands', 'warehouse.inventory-events', 'logistics.dispatch-events'.")
+    Container(otel_collector, "OpenTelemetry / Zipkin", "OTel Collector / Zipkin", "Recolecta traces OTLP, métricas Micrometer y logs correlacionados.")
 }
 
-System_Ext(grafana_cloud, "Grafana Cloud", "Mimir (Métricas), Loki (Logs) y Tempo (Distributed Traces).")
 System_Ext(maps_api, "External Routing API", "API externa de mapas y geocodificación.")
 
-' Relaciones de usuarios
-Rel(customer, api_gateway, "Consulta tracking de pedidos", "HTTPS / JSON")
-Rel(driver, api_gateway, "Actualiza checkpoints de entrega", "HTTPS / JSON")
+Rel(customer, api_gateway, "Crea órdenes, cancela y consulta tracking", "HTTPS / JSON")
+Rel(driver, api_gateway, "Reporta retiro, entrega o fallo en domicilio", "HTTPS / JSON")
 
-' Relaciones de Gateway
-Rel(api_gateway, warehouse_service, "Comandos de preparación y reserva de pedidos", "HTTP / REST")
-Rel(api_gateway, dispatch_service, "Comandos de asignación de despacho", "HTTP / REST")
+Rel(api_gateway, orchestrator_service, "POST /api/orders, POST /api/orders/{id}/cancel", "HTTP / REST")
+Rel(api_gateway, warehouse_service, "Administración de stock", "HTTP / REST")
+Rel(api_gateway, dispatch_service, "Checkpoints de conductor (pick-up, deliver, delivery-failed)", "HTTP / REST")
 Rel(api_gateway, tracking_service, "Consultas de tracking", "HTTP / REST")
 
-' Warehouse Service e interacciones
-Rel(warehouse_service, warehouse_db, "Persiste estado de stock y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
-Rel(warehouse_service, kafka_broker, "Outbox Worker: Publica eventos 'StockReserved', 'StockCancelled'", "Kafka Protocol (At-least-once)")
-Rel_Back(warehouse_service, kafka_broker, "Consume eventos compensatorios de la Saga ('DeliveryFailed')", "Kafka Consumer")
+Rel(orchestrator_service, orchestrator_db, "Persiste estado de OrderSaga y comandos en outbox", "JDBC / PostgreSQL")
+Rel(orchestrator_service, kafka_broker, "Publica comandos a 'warehouse.commands' y 'dispatch.commands'", "Kafka Producer")
+Rel_Back(orchestrator_service, kafka_broker, "Consume respuestas de 'warehouse.inventory-events' y 'logistics.dispatch-events'", "Kafka Consumer")
 
-' Dispatch Service e interacciones
-Rel(dispatch_service, dispatch_db, "Persiste despachos y eventos de outbox en una única transacción", "JDBC / PostgreSQL")
-Rel(dispatch_service, kafka_broker, "Outbox Worker: Publica eventos 'DeliveryScheduled', 'DeliveryFailed'", "Kafka Protocol")
-Rel_Back(dispatch_service, kafka_broker, "Consume 'StockReserved' para iniciar el despacho", "Kafka Consumer")
+Rel(warehouse_service, warehouse_db, "Persiste inventario, reserva y outbox en una única TX", "JDBC / PostgreSQL")
+Rel_Back(warehouse_service, kafka_broker, "Consume 'warehouse.commands'", "Kafka Consumer")
+Rel(warehouse_service, kafka_broker, "Publica 'StockReserved', 'StockReservationRejected', 'StockCancelled'", "Kafka Producer")
+
+Rel(dispatch_service, dispatch_db, "Persiste envíos y outbox", "JDBC / PostgreSQL")
+Rel_Back(dispatch_service, kafka_broker, "Consume 'dispatch.commands'", "Kafka Consumer")
+Rel(dispatch_service, kafka_broker, "Publica 'DeliveryScheduled', 'ShipmentPickedUp', 'ShipmentDelivered', 'DeliveryFailed', 'ShipmentCancelled'", "Kafka Producer")
 Rel(dispatch_service, maps_api, "Calcula rutas con Circuit Breaker & Retry (Resilience4j)", "HTTPS / REST")
 
-' Tracking Service e interacciones
-Rel(tracking_service, redis_cache, "Consulta estado cacheado (Cache-Aside)", "RESP Protocol")
-Rel_Back(tracking_service, kafka_broker, "Consume eventos del broker para invalidar o actualizar cache", "Kafka Consumer")
-
-' Observabilidad
-Rel(warehouse_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
-Rel(dispatch_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
-Rel(tracking_service, otel_collector, "Envía traces OTLP, logs JSON y métricas Micrometer", "gRPC / OTLP")
-Rel(otel_collector, grafana_cloud, "Exporta telemetría a Prometheus/Mimir, Loki y Tempo", "HTTPS / OTLP Remote Write")
+Rel(tracking_service, redis_cache, "Cache-Aside", "RESP Protocol")
+Rel_Back(tracking_service, kafka_broker, "Consume eventos de inventario y despacho para actualizar proyección", "Kafka Consumer")
 
 @enduml

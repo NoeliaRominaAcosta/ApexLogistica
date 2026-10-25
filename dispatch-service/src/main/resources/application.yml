@@ -40,10 +40,14 @@ app:
   kafka:
     topics:
       inventory-events: warehouse.inventory-events
+      dispatch-commands: dispatch.commands
       dispatch-events: logistics.dispatch-events
   outbox:
     polling-rate-ms: 1000
     batch-size: 50
+  recovery:
+    pending-routing-threshold-seconds: 30
+    polling-rate-ms: 15000
 
 # Resilience4j Configuration
 resilience4j:

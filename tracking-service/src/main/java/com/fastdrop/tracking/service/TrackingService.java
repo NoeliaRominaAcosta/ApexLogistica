@@ -1,7 +1,6 @@
 package com.fastdrop.tracking.service;
 
 import com.fastdrop.common.dto.ShipmentTrackingDTO;
-import com.fastdrop.common.util.TraceUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,15 +26,19 @@ public class TrackingService {
 
     private static final String CACHE_PREFIX = "shipment:tracking:";
 
-    // Repositorio en memoria local como fuente de verdad del servicio de tracking
+    private static final Map<String, Integer> STAGE_PRECEDENCE = Map.of(
+            "INITIALIZED", 0,
+            "STOCK_RESERVED", 1,
+            "DELIVERY_SCHEDULED", 2,
+            "IN_TRANSIT", 3,
+            "DELIVERY_FAILED", 4,
+            "DELIVERED", 5,
+            "STOCK_REJECTED", 5,
+            "CANCELLED", 5
+    );
+
     private final Map<String, ShipmentTrackingDTO> persistentStore = new ConcurrentHashMap<>();
 
-    /**
-     * Cache-Aside Pattern:
-     * 1. Consulta Redis.
-     * 2. Si hay acierto (CACHE HIT), retorna directamente de memoria rápida.
-     * 3. Si hay fallo (CACHE MISS), busca en la fuente persistente, puebla Redis con TTL y retorna.
-     */
     public Optional<ShipmentTrackingDTO> getTracking(String orderId) {
         String cacheKey = CACHE_PREFIX + orderId;
         log.info("Consultando tracking para Orden={}", orderId);
@@ -66,9 +69,6 @@ public class TrackingService {
         return Optional.empty();
     }
 
-    /**
-     * Invalidación Reactiva proactiva de clave de Redis al recibir evento de dominio
-     */
     public void invalidateCache(String orderId) {
         String cacheKey = CACHE_PREFIX + orderId;
         try {
@@ -88,7 +88,11 @@ public class TrackingService {
                 .lastUpdated(Instant.now())
                 .build());
 
-        dto.setStatus(stage);
+        int currentRank = STAGE_PRECEDENCE.getOrDefault(dto.getStatus(), 0);
+        int incomingRank = STAGE_PRECEDENCE.getOrDefault(stage, 0);
+        if (incomingRank >= currentRank) {
+            dto.setStatus(stage);
+        }
         dto.setLastUpdated(Instant.now());
         if (warehouseId != null) dto.setCurrentWarehouseId(warehouseId);
         if (driverId != null) dto.setDriverId(driverId);
@@ -101,7 +105,6 @@ public class TrackingService {
                 .timestamp(Instant.now())
                 .build());
 
-        // Inmediatamente invalidamos la clave en Redis para que la próxima lectura vea el estado fresco
         invalidateCache(orderId);
     }
 }
