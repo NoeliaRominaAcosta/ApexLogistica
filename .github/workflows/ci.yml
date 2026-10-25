@@ -38,7 +38,7 @@ jobs:
         run: mvn -B -ntp clean verify
 
       - name: Publish JUnit Test Report to Job Summary
-        uses: mikepenz/action-junit-report@v4
+        uses: mikepenz/action-junit-report@v6
         if: always()
         with:
           report_paths: '**/target/surefire-reports/TEST-*.xml'
